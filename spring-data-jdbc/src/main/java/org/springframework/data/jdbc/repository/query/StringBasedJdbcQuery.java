@@ -19,12 +19,14 @@ import static org.springframework.data.jdbc.repository.query.JdbcQueryExecution.
 
 import java.lang.reflect.Constructor;
 import java.sql.SQLType;
+import java.sql.Types;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.List;
 
 import org.springframework.beans.BeanUtils;
 import org.springframework.beans.factory.BeanFactory;
+import org.springframework.core.convert.TypeDescriptor;
 import org.springframework.core.convert.converter.Converter;
 import org.springframework.data.jdbc.core.convert.JdbcColumnTypes;
 import org.springframework.data.jdbc.core.convert.JdbcConverter;
@@ -41,6 +43,7 @@ import org.springframework.data.repository.query.ResultProcessor;
 import org.springframework.data.repository.query.SpelEvaluator;
 import org.springframework.data.repository.query.SpelQueryContext;
 import org.springframework.data.util.TypeInformation;
+import org.springframework.expression.TypedValue;
 import org.springframework.jdbc.core.ResultSetExtractor;
 import org.springframework.jdbc.core.RowMapper;
 import org.springframework.jdbc.core.namedparam.MapSqlParameterSource;
@@ -162,7 +165,9 @@ public class StringBasedJdbcQuery extends AbstractJdbcQuery {
 
 		SpelEvaluator spelEvaluator = queryContext.parse(query, getQueryMethod().getParameters());
 
-		spelEvaluator.evaluate(objects).forEach(parameterMap::addValue);
+		spelEvaluator.evaluateWithTypeInformation(objects).forEach((name, typedValue) -> {
+			convertAndAddParameter(parameterMap, name, typedValue);
+		});
 
 		return spelEvaluator.getQueryString();
 	}
@@ -180,12 +185,31 @@ public class StringBasedJdbcQuery extends AbstractJdbcQuery {
 		return parameters;
 	}
 
-	private void convertAndAddParameter(MapSqlParameterSource parameters, Parameter p, Object value) {
+	private void convertAndAddParameter(MapSqlParameterSource parameters, String parameterName, TypedValue typedValue) {
+		TypeDescriptor type = typedValue.getTypeDescriptor();
+		Object value = typedValue.getValue();
+
+		if (type != null) {
+			convertAndAddParameter(parameters, parameterName, TypeInformation.of(type.getResolvableType()), value);
+		} else if (value != null) {
+			convertAndAddParameter(parameters, parameterName, TypeInformation.of(value.getClass()), value);
+		} else {
+			parameters.addValue(parameterName, null, Types.NULL);
+		}
+	}
+
+	private void convertAndAddParameter(MapSqlParameterSource parameters, Parameter p, @Nullable Object value) {
 
 		String parameterName = p.getName().orElseThrow(() -> new IllegalStateException(PARAMETER_NEEDS_TO_BE_NAMED));
 
 		RelationalParameters.RelationalParameter parameter = getQueryMethod().getParameters().getParameter(p.getIndex());
 		TypeInformation<?> typeInformation = parameter.getTypeInformation();
+
+		convertAndAddParameter(parameters, parameterName, typeInformation, value);
+	}
+
+	private void convertAndAddParameter(MapSqlParameterSource parameters, String parameterName,
+			TypeInformation<?> typeInformation, @Nullable Object value) {
 
 		JdbcValue jdbcValue;
 		if (typeInformation.isCollectionLike() && value instanceof Collection<?>) {
